@@ -1,20 +1,72 @@
+import { getPlayerKey, isPlayerFavorite, updateActivePlayers } from './favorites.js';
+import { checkPendingSearch, isSearching, searchPlayers } from './search.js';
 import { setServerInfo, setTitle } from './server.js';
+import { API_BASE_URL, DEFAULT_HEADERS, PROXIES } from './utils/constants.js';
 import { getDiscordId, getSteamId } from './utils/user.js';
-import { isSearching, searchPlayers, checkPendingSearch } from './search.js';
-import { API_BASE_URL, DEFAULT_HEADERS } from './utils/constants.js';
-import { updateActivePlayers, isPlayerFavorite } from './favorites.js';
-import { getPlayerKey } from './favorites.js'; // Ajouté pour générer la clé stable
 
 const refreshButton = document.querySelector('#refresh-button');
 const loader = document.querySelector('#loader');
 const table = document.querySelector('table');
-const refreshTimer = document.querySelector('#refresh-timer');
 
 let currentPlayers;
-let fetcher;
-let seconds = 30;
 
 export const getPlayers = () => currentPlayers;
+
+async function retryFetch(url, options = {}) {
+	const { retriesPerProxy = 1, timeout = 5000, backoff = 2 } = options;
+	const proxyList = options.proxyList ? [...options.proxyList, ...PROXIES] : PROXIES;
+
+	// If no proxy, fallback to direct request
+	const targets = proxyList.length ? proxyList : [null];
+
+	for (let i = 0; i < targets.length; i++) {
+		const proxy = targets[i];
+
+		for (let attempt = 0; attempt <= retriesPerProxy; attempt++) {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), timeout);
+
+			const finalUrl = proxy ? proxy + url : url;
+
+			try {
+				const response = await fetch(finalUrl, {
+					...options,
+					signal: controller.signal,
+				});
+
+				clearTimeout(timer);
+
+				if (response.ok) {
+					return response;
+				}
+
+				throw new Error(`Retryable status: ${response.status}`);
+			} catch (err) {
+				clearTimeout(timer);
+
+				const isLastAttemptForProxy = attempt === retriesPerProxy;
+				const isLastProxy = i === targets.length - 1;
+				const isLastOverall = isLastProxy && isLastAttemptForProxy;
+
+				if (isLastOverall) {
+					throw err;
+				}
+
+				// ✅ Only delay if retrying SAME proxy
+				if (!isLastAttemptForProxy) {
+					const delay = timeout * Math.pow(backoff, attempt);
+
+					console.warn(`Proxy ${proxy || 'direct'} failed (attempt ${attempt + 1}). Retrying in ${delay}ms...`);
+
+					await new Promise((res) => setTimeout(res, delay));
+				} else {
+					// Optional: log switch to next proxy
+					console.warn(`Proxy ${proxy || 'direct'} exhausted. Switching to next proxy...`);
+				}
+			}
+		}
+	}
+}
 
 export const fetchServer = (serverId) => {
 	try {
@@ -24,7 +76,6 @@ export const fetchServer = (serverId) => {
 		}
 
 		setTitle('Loading server data from FiveM API...');
-		seconds = 30;
 
 		showLoader(true);
 
@@ -32,14 +83,13 @@ export const fetchServer = (serverId) => {
 		const url = `${API_BASE_URL}/servers/single/${serverId}`;
 		console.info(`Fetching server info`, serverId, url);
 
-		fetch(url, { headers: DEFAULT_HEADERS })
+		retryFetch(url, { headers: DEFAULT_HEADERS })
 			.then(handleResponse)
 			.then((json) => {
 				setServerInfo(serverId, json.Data);
 				let playersFetch = false; //Todo
 				let url = `${API_BASE_URL}/servers/single/${serverId}`;
 				fetchPlayers(url, playersFetch);
-				startFetcher(serverId);
 				showNotification('Server data loaded successfully', 'success');
 			})
 			.catch((error) => {
@@ -55,22 +105,9 @@ export const fetchServer = (serverId) => {
 	}
 };
 
-const startFetcher = (serverId) => {
-	console.log(`Starting fetcher at ${seconds} seconds`);
-	if (fetcher) clearInterval(fetcher);
-	fetcher = setInterval(() => {
-		refreshTimer.textContent = seconds + 's';
-		if (seconds < 1) {
-			clearInterval(fetcher);
-			fetchServer(serverId);
-		}
-		seconds--;
-	}, 1000);
-};
-
 const fetchPlayers = (url, playersFetch = false) => {
 	console.info('Fetching players with method:', playersFetch ? 'players.json' : 'normal', url);
-	fetch(url, { headers: DEFAULT_HEADERS })
+	retryFetch(url, { headers: DEFAULT_HEADERS })
 		.then(handleResponse)
 		.then((json) => {
 			let players = playersFetch ? json : json.Data.players;
