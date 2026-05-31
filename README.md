@@ -9,7 +9,7 @@ Available here: [https://igorovh.github.io/fivem-player-list/](https://igorovh.g
 It uses the FiveM endpoint, which is also used in their UI:
 
 ```
-https://servers-frontend.fivem.net/api/servers/single/serverId
+https://frontend.cfx-services.net/api/servers/single/serverId
 ```
 
 # How to get Server ID?
